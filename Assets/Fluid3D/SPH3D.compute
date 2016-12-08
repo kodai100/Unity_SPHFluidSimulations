@@ -1,0 +1,184 @@
+﻿#pragma kernel sph
+
+struct Particle {
+	float3 position;
+	float3 velocity;
+	float3 force;
+	float density;
+	float pressure;
+};
+
+#define SIMULATION_BLOCK_SIZE 32
+
+StructuredBuffer<Particle> _ParticleBufferRead;
+RWStructuredBuffer<Particle> _ParticleBufferWrite;
+
+int _MaxParticleNum;
+
+// SPH -------------------------------------------
+float SPH_RESTDENSITY;
+float SPH_INTSTIFF;
+float SPH_PMASS;
+float SPH_SIMSCALE;
+float H;
+float PI;
+float DT;
+float SPH_VISC;
+float SPH_LIMIT;
+float SPH_RADIUS;
+float SPH_EPSILON;
+float SPH_EXTSTIFF;
+float SPH_EXTDAMP;
+float SPH_PDIST;
+float3 MIN;
+float3 MAX;
+float3 INIT_MIN;
+float3 INIT_MAX;
+float3 GRAVITY;
+float Poly6Kern;
+float SpikyKern;
+float LapKern;
+// SPH -------------------------------------------
+
+void initBufferWrite (unsigned int id){
+	_ParticleBufferWrite[id].position = float3(0, 0, 0);
+	_ParticleBufferWrite[id].velocity = float3(0, 0, 0);
+	_ParticleBufferWrite[id].force = float3(0, 0, 0);
+	_ParticleBufferWrite[id].density = 0.0;
+	_ParticleBufferWrite[id].pressure = 0.0;
+}
+
+[numthreads(SIMULATION_BLOCK_SIZE, 1, 1)]
+void gridSort(uint3 DTid : SV_DispatchThreadID) {
+
+}
+
+[numthreads(SIMULATION_BLOCK_SIZE, 1, 1)]
+void sph(uint3 DTid : SV_DispatchThreadID) {
+
+	const unsigned int id = DTid.x;
+	Particle particle = _ParticleBufferRead[id];
+
+	//initBufferWrite(id);
+
+	// calc amount ---------------------------------------------
+	float r2, c;
+	float3 dr;
+	float H2 = H * H; // 有効半径の2乗
+
+	float sum = 0.0;
+
+	for (unsigned int j = 0; j < (uint)_MaxParticleNum; j++) {
+		if (id == j) {
+			continue;
+		}
+		else {
+			dr = (particle.position - _ParticleBufferRead[j].position) * SPH_SIMSCALE;
+			r2 = dot(dr, dr);
+			if (H2 > r2) {
+				c = H2 - r2;
+				sum += c * c * c;
+			}
+		}
+	}
+
+	particle.density = (float)sum * SPH_PMASS * Poly6Kern;
+	particle.pressure = (particle.density - SPH_RESTDENSITY) * SPH_INTSTIFF;
+	particle.density = 1.0 / (particle.density + 1e-4);
+	// calc amount -------------------------------------------
+
+
+	// calc force --------------------------------------------
+	float3 pterm, vterm;
+	float r;
+	float3 force, fcurr;
+
+	force = float3(0, 0, 0);
+
+	for (unsigned int j = 0; j < (uint)_MaxParticleNum; j++) {
+		if (id == j) {
+			continue;
+		}
+		else {
+			dr = (particle.position - _ParticleBufferRead[j].position) * SPH_SIMSCALE;
+			r = sqrt(dot(dr, dr));
+			if (H > r) {
+				c = H - r;
+				pterm = -0.5 * c * c * SpikyKern / r * (particle.pressure + _ParticleBufferRead[j].pressure) * dr;
+				vterm = LapKern * SPH_VISC * c * (_ParticleBufferRead[j].velocity - particle.velocity);
+				fcurr = pterm + vterm;
+				fcurr *= SPH_PMASS * _ParticleBufferRead[j].density;
+				force += fcurr;
+			}
+		}
+	}
+
+	particle.force = force;
+	// calc force --------------------------------------------
+
+
+	// calc advance --------------------------------------------
+	float3 accel, g, norm;
+	float speed, diff, adj;
+
+	g = GRAVITY;
+
+	// Penalty method
+	accel = particle.force * particle.density;
+
+	speed = dot(accel, accel);
+	if (speed > SPH_LIMIT * SPH_LIMIT) {
+		accel *= SPH_LIMIT / sqrt(speed);
+	}
+
+	// Z-axis walls
+	diff = 2.0 * SPH_RADIUS - (particle.position.z - MIN.z) * SPH_SIMSCALE;
+	if (diff > SPH_EPSILON) {
+		norm = float3(0, 0, 1);
+		adj = SPH_EXTSTIFF * diff - SPH_EXTDAMP * dot(norm, particle.velocity);
+		accel += adj * norm;
+	}
+	diff = 2 * SPH_RADIUS - (MAX.z - particle.position.z) * SPH_SIMSCALE;
+	if (diff > SPH_EPSILON) {
+		norm = float3(0, 0, -1);
+		adj = SPH_EXTSTIFF * diff - SPH_EXTDAMP * dot(norm, particle.velocity);
+		accel += adj * norm;
+	}
+
+	// X-axis walls
+	diff = 2.0 * SPH_RADIUS - (particle.position.x - MIN.x) * SPH_SIMSCALE;
+	if (diff > SPH_EPSILON) {
+		norm = float3(1, 0, 0);
+		adj = SPH_EXTSTIFF * diff - SPH_EXTDAMP * dot(norm, particle.velocity);
+		accel += adj * norm;
+	}
+	diff = 2.0 * SPH_RADIUS - (MAX.x - particle.position.x) * SPH_SIMSCALE;
+	if (diff > SPH_EPSILON) {
+		norm = float3(-1, 0, 0);
+		adj = SPH_EXTSTIFF * diff - SPH_EXTDAMP * dot(norm, particle.velocity);
+		accel += adj * norm;
+	}
+
+	// Y-axis walls
+	diff = 2.0 * SPH_RADIUS - (particle.position.y - MIN.y) * SPH_SIMSCALE;
+	if (diff > SPH_EPSILON) {
+		norm = float3(0, 1, 0);
+		adj = SPH_EXTSTIFF * diff - SPH_EXTDAMP * dot(norm, particle.velocity);
+		accel += adj * norm;
+	}
+	diff = 2.0 * SPH_RADIUS - (MAX.y - particle.position.y) * SPH_SIMSCALE;
+	if (diff > SPH_EPSILON) {
+		norm = float3(0, -1, 0);
+		adj = SPH_EXTSTIFF * diff - SPH_EXTDAMP * dot(norm, particle.velocity);
+		accel += adj * norm;
+	}
+
+	accel += g;
+	
+	particle.velocity += accel * DT;
+	particle.position += particle.velocity * DT / SPH_SIMSCALE;
+	// calc force --------------------------------------------
+
+	_ParticleBufferWrite[id] = particle;
+	
+}

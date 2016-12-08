@@ -1,17 +1,17 @@
 ﻿#pragma kernel sph
 
-struct Particle {
-	float3 position;
-	float3 velocity;
-	float3 force;
+struct Particle2D {
+	float2 position;
+	float2 velocity;
+	float2 force;
 	float density;
 	float pressure;
 };
 
 #define SIMULATION_BLOCK_SIZE 32
 
-StructuredBuffer<Particle> _ParticleBufferRead;
-RWStructuredBuffer<Particle> _ParticleBufferWrite;
+StructuredBuffer<Particle2D> _ParticleBufferRead;
+RWStructuredBuffer<Particle2D> _ParticleBufferWrite;
 
 int _MaxParticleNum;
 
@@ -30,35 +30,25 @@ float SPH_EPSILON;
 float SPH_EXTSTIFF;
 float SPH_EXTDAMP;
 float SPH_PDIST;
-float3 MIN;
-float3 MAX;
-float3 INIT_MIN;
-float3 INIT_MAX;
-float3 GRAVITY;
+float2 MIN;
+float2 MAX;
+float2 INIT_MIN;
+float2 INIT_MAX;
+float2 GRAVITY;
 float Poly6Kern;
 float SpikyKern;
 float LapKern;
 // SPH -------------------------------------------
 
-void initBufferWrite (unsigned int id){
-	_ParticleBufferWrite[id].position = float3(0, 0, 0);
-	_ParticleBufferWrite[id].velocity = float3(0, 0, 0);
-	_ParticleBufferWrite[id].force = float3(0, 0, 0);
-	_ParticleBufferWrite[id].density = 0.0;
-	_ParticleBufferWrite[id].pressure = 0.0;
-}
-
 [numthreads(SIMULATION_BLOCK_SIZE, 1, 1)]
 void sph(uint3 DTid : SV_DispatchThreadID) {
 
 	const unsigned int id = DTid.x;
-	Particle particle = _ParticleBufferRead[id];
-
-	//initBufferWrite(id);
+	Particle2D particle = _ParticleBufferRead[id];
 
 	// calc amount ---------------------------------------------
 	float r2, c;
-	float3 dr;
+	float2 dr;
 	float H2 = H * H; // 有効半径の2乗
 
 	float sum = 0.0;
@@ -84,11 +74,11 @@ void sph(uint3 DTid : SV_DispatchThreadID) {
 
 
 	// calc force --------------------------------------------
-	float3 pterm, vterm;
+	float2 pterm, vterm;
 	float r;
-	float3 force, fcurr;
+	float2 force, fcurr;
 
-	force = float3(0, 0, 0);
+	force = float2(0, 0);
 
 	for (unsigned int j = 0; j < (uint)_MaxParticleNum; j++) {
 		if (id == j) {
@@ -113,7 +103,7 @@ void sph(uint3 DTid : SV_DispatchThreadID) {
 
 
 	// calc advance --------------------------------------------
-	float3 accel, g, norm;
+	float2 accel, g, norm;
 	float speed, diff, adj;
 
 	g = GRAVITY;
@@ -126,30 +116,16 @@ void sph(uint3 DTid : SV_DispatchThreadID) {
 		accel *= SPH_LIMIT / sqrt(speed);
 	}
 
-	// Z-axis walls
-	diff = 2.0 * SPH_RADIUS - (particle.position.z - MIN.z) * SPH_SIMSCALE;
-	if (diff > SPH_EPSILON) {
-		norm = float3(0, 0, 1);
-		adj = SPH_EXTSTIFF * diff - SPH_EXTDAMP * dot(norm, particle.velocity);
-		accel += adj * norm;
-	}
-	diff = 2 * SPH_RADIUS - (MAX.z - particle.position.z) * SPH_SIMSCALE;
-	if (diff > SPH_EPSILON) {
-		norm = float3(0, 0, -1);
-		adj = SPH_EXTSTIFF * diff - SPH_EXTDAMP * dot(norm, particle.velocity);
-		accel += adj * norm;
-	}
-
 	// X-axis walls
 	diff = 2.0 * SPH_RADIUS - (particle.position.x - MIN.x) * SPH_SIMSCALE;
 	if (diff > SPH_EPSILON) {
-		norm = float3(1, 0, 0);
+		norm = float2(1, 0);
 		adj = SPH_EXTSTIFF * diff - SPH_EXTDAMP * dot(norm, particle.velocity);
 		accel += adj * norm;
 	}
 	diff = 2.0 * SPH_RADIUS - (MAX.x - particle.position.x) * SPH_SIMSCALE;
 	if (diff > SPH_EPSILON) {
-		norm = float3(-1, 0, 0);
+		norm = float2(-1, 0);
 		adj = SPH_EXTSTIFF * diff - SPH_EXTDAMP * dot(norm, particle.velocity);
 		accel += adj * norm;
 	}
@@ -157,23 +133,23 @@ void sph(uint3 DTid : SV_DispatchThreadID) {
 	// Y-axis walls
 	diff = 2.0 * SPH_RADIUS - (particle.position.y - MIN.y) * SPH_SIMSCALE;
 	if (diff > SPH_EPSILON) {
-		norm = float3(0, 1, 0);
+		norm = float2(0, 1);
 		adj = SPH_EXTSTIFF * diff - SPH_EXTDAMP * dot(norm, particle.velocity);
 		accel += adj * norm;
 	}
 	diff = 2.0 * SPH_RADIUS - (MAX.y - particle.position.y) * SPH_SIMSCALE;
 	if (diff > SPH_EPSILON) {
-		norm = float3(0, -1, 0);
+		norm = float2(0, -1);
 		adj = SPH_EXTSTIFF * diff - SPH_EXTDAMP * dot(norm, particle.velocity);
 		accel += adj * norm;
 	}
 
 	accel += g;
-	
+
 	particle.velocity += accel * DT;
 	particle.position += particle.velocity * DT / SPH_SIMSCALE;
 	// calc force --------------------------------------------
 
 	_ParticleBufferWrite[id] = particle;
-	
+
 }

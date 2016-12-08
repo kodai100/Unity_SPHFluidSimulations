@@ -10,8 +10,8 @@ public class WallAnimation : MonoBehaviour {
 
 	// Use this for initialization
 	void Start () {
-        min = GetComponent<GPUSPHParticleSystem>().MIN;
-        max = GetComponent<GPUSPHParticleSystem>().MAX;
+        min = GetComponent<SPH3D>().MIN;
+        max = GetComponent<SPH3D>().MAX;
         length = max - min;
     }
 	
@@ -19,7 +19,7 @@ public class WallAnimation : MonoBehaviour {
 	void Update () {
         if (Time.realtimeSinceStartup > startTime){
             float res = min.x + length.x / 4 + length.x / 4 * Mathf.Sin(speed * Time.realtimeSinceStartup);
-            GetComponent<GPUSPHParticleSystem>().MIN.x = res;
+            GetComponent<SPH3D>().MIN.x = res;
         }
 
     }

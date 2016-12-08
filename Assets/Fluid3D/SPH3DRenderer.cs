@@ -1,10 +1,10 @@
 ﻿using UnityEngine;
 using System.Collections;
 
-public class Render : MonoBehaviour
+public class SPH3DRenderer : MonoBehaviour
 {
 
-    public GPUSPHParticleSystem GPUSPHCSScript;
+    public SPH3D GPUSPHCSScript;
 
     public Material ParticleRenderMat;
 

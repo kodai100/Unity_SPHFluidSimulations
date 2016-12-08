@@ -1,4 +1,4 @@
-﻿Shader "Custom/SPH" {
+﻿Shader "Custom/SPH3D" {
 	Properties{
 		_MainTex("Texture", 2D) = "white" {}
 		_ParticleRad("ParticleRadius", Range(0.01, 1)) = 0.05

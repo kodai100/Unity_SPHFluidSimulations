@@ -2,13 +2,14 @@
 using System.Runtime.InteropServices;
 using System.Collections.Generic;
 
-public class GPUSPHParticleSystem : MonoBehaviour {
+public class SPH3D : MonoBehaviour {
 
     const int SIMULATION_BLOCK_SIZE = 32;
     public ComputeShader particleCS;
 
     ComputeBuffer particleBufferRead;
     ComputeBuffer particleBufferWrite;
+    ComputeBuffer GridSorted;
 
     public int MaxParticleNum;
 
@@ -17,14 +18,14 @@ public class GPUSPHParticleSystem : MonoBehaviour {
     public float SPH_INTSTIFF = 3.0f; // 堅さ(?)
     public float SPH_PMASS = 0.00020543f; // 粒子質量
     public float SPH_SIMSCALE = 0.004f; // シミュレートするスケール
-    public float H = 0.01f; // 有効半径
+    public float H = 0.01f; // 有効半径(CELL_WIDTH)
     public static float PI = 3.141592653589793f;
     public float DT = 0.004f; // ΔT
     public float SPH_VISC = 0.2f; // 粘性
     public float SPH_LIMIT = 200.0f; // 速度制限
     public float SPH_RADIUS = 0.004f; // 半径
     public float SPH_EPSILON = 0.00001f; // 許容誤差
-    public float SPH_EXTSTIFF = 10000.0f;
+    public float SPH_EXTSTIFF = 10000.0f;   // 壁の反発力
     public float SPH_EXTDAMP = 256.0f;
     public float SPH_PDIST;
     public Vector3 MIN = new Vector3(0.0f, 0.0f, -10.0f);
@@ -44,6 +45,7 @@ public class GPUSPHParticleSystem : MonoBehaviour {
     void Start() {
         InitializeVariables();
         InitializeComputeBuffer();
+        InitializeGizmo();
     }
 
     public ComputeBuffer GetParticleBuffer(){
@@ -84,6 +86,8 @@ public class GPUSPHParticleSystem : MonoBehaviour {
         int kernel = particleCS.FindKernel("sph");
         particleCS.SetBuffer(kernel, "_ParticleBufferRead", particleBufferRead);
         particleCS.SetBuffer(kernel, "_ParticleBufferWrite", particleBufferWrite);
+        //particleCS.SetBuffer(kernel, "_GridSorted", GridSorted);
+
         particleCS.Dispatch(kernel, threadGroupSize, 1, 1);
 
         SwapBuffer(ref particleBufferRead, ref particleBufferWrite);
@@ -112,7 +116,8 @@ public class GPUSPHParticleSystem : MonoBehaviour {
 
         particleBufferRead = new ComputeBuffer(MaxParticleNum, Marshal.SizeOf(typeof(Particle)));    // パーティクル数を定義
         particleBufferWrite = new ComputeBuffer(MaxParticleNum, Marshal.SizeOf(typeof(Particle)));
-
+        //GridSorted = new ComputeBuffer();
+        
         Particle[] p = particles.ToArray();
         particleBufferRead.SetData(p);
         particleBufferWrite.SetData(p);
@@ -136,9 +141,18 @@ public class GPUSPHParticleSystem : MonoBehaviour {
         }
     }
 
+    private Vector3 forGizmoMIN;
+    private Vector3 forGizmoMAX;
+    void InitializeGizmo() {
+        forGizmoMIN = MIN;
+        forGizmoMAX = MAX;
+    }
+
     void OnDrawGizmos() {
         Gizmos.color = Color.yellow;
-        Gizmos.DrawWireCube(Vector3.zero, MAX);
+        Vector3 blank = ((forGizmoMAX - forGizmoMIN) - (MAX - MIN)) / 2;
+
+        Gizmos.DrawWireCube(new Vector3(blank.x , (MAX.y - MIN.y) / 2, 0), MAX-MIN);
     }
 
 }
