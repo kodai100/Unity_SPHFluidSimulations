@@ -13,32 +13,31 @@ struct Particle2D {
 StructuredBuffer<Particle2D> _ParticleBufferRead;
 RWStructuredBuffer<Particle2D> _ParticleBufferWrite;
 
-int _MaxParticleNum;
-
-// SPH -------------------------------------------
-float SPH_RESTDENSITY;
-float SPH_INTSTIFF;
-float SPH_PMASS;
-float SPH_SIMSCALE;
-float H;
-float PI;
-float DT;
-float SPH_VISC;
-float SPH_LIMIT;
-float SPH_RADIUS;
-float SPH_EPSILON;
-float SPH_EXTSTIFF;
-float SPH_EXTDAMP;
-float SPH_PDIST;
-float2 MIN;
-float2 MAX;
-float2 INIT_MIN;
-float2 INIT_MAX;
-float2 GRAVITY;
-float Poly6Kern;
-float SpikyKern;
-float LapKern;
-// SPH -------------------------------------------
+cbuffer SPH_PARAMS {
+	int _MaxParticleNum;
+	float SPH_RESTDENSITY;
+	float SPH_PRESSURESTIFF;
+	float SPH_PMASS;
+	float SPH_SIMSCALE;
+	float H;
+	float PI;
+	float DT;
+	float SPH_VISC;
+	float SPH_LIMIT;
+	float SPH_RADIUS;
+	float SPH_EPSILON;
+	float SPH_EXTSTIFF;
+	float SPH_EXTDAMP;
+	float SPH_PDIST;
+	float2 MIN;
+	float2 MAX;
+	float2 INIT_MIN;
+	float2 INIT_MAX;
+	float2 GRAVITY;
+	float Poly6Kern;
+	float SpikyKern;
+	float LapKern;
+};
 
 [numthreads(SIMULATION_BLOCK_SIZE, 1, 1)]
 void sph(uint3 DTid : SV_DispatchThreadID) {
@@ -68,7 +67,7 @@ void sph(uint3 DTid : SV_DispatchThreadID) {
 	}
 
 	particle.density = (float)sum * SPH_PMASS * Poly6Kern;
-	particle.pressure = (particle.density - SPH_RESTDENSITY) * SPH_INTSTIFF;
+	particle.pressure = max(pow(particle.density / SPH_RESTDENSITY, 3) - 1, 0) * SPH_PRESSURESTIFF;	// acutually 3 -> 7
 	particle.density = 1.0 / (particle.density + 1e-4);
 	// calc amount -------------------------------------------
 

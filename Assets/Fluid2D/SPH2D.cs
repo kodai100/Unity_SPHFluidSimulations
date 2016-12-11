@@ -16,7 +16,7 @@ public class SPH2D : MonoBehaviour {
     #region SPH
     // ---------- For SPH ------------
     public float SPH_RESTDENSITY = 600.0f;
-    public float SPH_INTSTIFF = 3.0f; // 堅さ(?)
+    public float SPH_PRESSURESTIFF = 3.0f; // 堅さ(?)
     public float SPH_PMASS = 0.00020543f; // 粒子質量
     public float SPH_SIMSCALE = 0.004f; // シミュレートするスケール
     public float H = 0.01f; // 有効半径(CELL_WIDTH)
@@ -97,7 +97,7 @@ public class SPH2D : MonoBehaviour {
     void computeShaderSettingsAndDispatch(int threadGroupSize) {
         particleCS.SetInt("_MaxParticleNum", MaxParticleNum);
         particleCS.SetFloat("SPH_RESTDENSITY", SPH_RESTDENSITY);
-        particleCS.SetFloat("SPH_INTSTIFF", SPH_INTSTIFF);
+        particleCS.SetFloat("SPH_PRESSURESTIFF", SPH_PRESSURESTIFF);
         particleCS.SetFloat("SPH_PMASS", SPH_PMASS);
         particleCS.SetFloat("SPH_SIMSCALE", SPH_SIMSCALE);
         particleCS.SetFloat("H", H);

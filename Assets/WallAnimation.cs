@@ -8,8 +8,12 @@ public class WallAnimation : MonoBehaviour {
     public float speed = 1.0f;
     public float startTime = 10f;
 
+    private float time;
+
 	// Use this for initialization
 	void Start () {
+        time = 0;
+
         min = GetComponent<SPH3D>().MIN;
         max = GetComponent<SPH3D>().MAX;
         length = max - min;
@@ -17,8 +21,10 @@ public class WallAnimation : MonoBehaviour {
 	
 	// Update is called once per frame
 	void Update () {
-        if (Time.realtimeSinceStartup > startTime){
-            float res = min.x + length.x / 4 + length.x / 4 * Mathf.Sin(speed * Time.realtimeSinceStartup);
+        time += Time.deltaTime;
+
+        if (time > startTime){
+            float res = min.x + length.x / 4 + length.x / 4 * Mathf.Sin(speed * time);
             GetComponent<SPH3D>().MIN.x = res;
         }
 

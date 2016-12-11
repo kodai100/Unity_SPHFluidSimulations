@@ -80,6 +80,8 @@
     <Compile Include="Assets\Fluid2D\SPH2DRenderer.cs" />
     <Compile Include="Assets\Fluid3D\SPH3D.cs" />
     <Compile Include="Assets\Fluid3D\SPH3DRenderer.cs" />
+    <Compile Include="Assets\Fluid3D_Fast\SPH3D.cs" />
+    <Compile Include="Assets\Fluid3D_Fast\SPH3DRenderer.cs" />
     <Compile Include="Assets\WallAnimation.cs" />
   </ItemGroup>
   <ItemGroup>
@@ -87,6 +89,8 @@
     <None Include="Assets\Fluid2D\SPH2D.shader" />
     <None Include="Assets\Fluid3D\SPH3D.compute" />
     <None Include="Assets\Fluid3D\SPH3D.shader" />
+    <None Include="Assets\Fluid3D_Fast\SPH3D.compute" />
+    <None Include="Assets\Fluid3D_Fast\SPH3D.shader" />
     <None Include="Assets\Standard Assets\Effects\GlassRefraction\Shaders\GlassStainedBumpDistort.shader" />
     <None Include="Assets\Standard Assets\Effects\ImageEffects\Shaders\BlendModesOverlay.shader" />
     <None Include="Assets\Standard Assets\Effects\ImageEffects\Shaders\BlurEffectConeTaps.shader" />
