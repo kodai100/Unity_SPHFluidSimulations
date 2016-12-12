@@ -1,4 +1,6 @@
 ﻿#pragma kernel buildGrid
+#pragma kernel buildGridIndices
+#pragma kernel rearrangeParticles
 #pragma kernel sph
 
 struct Particle {
@@ -14,19 +16,25 @@ struct HashGridKeyValue {
 	unsigned int value;
 };
 
-#define SIMULATION_BLOCK_SIZE 32
+struct GridIndices {
+	unsigned int start;
+	unsigned int end;
+};
+
+#define SIMULATION_BLOCK_SIZE 256
 #define PI 3.141592653589793
+#define EPSILON 1e-4f
 
 StructuredBuffer<Particle> _ParticleBufferRead;
 RWStructuredBuffer<Particle> _ParticleBufferWrite;
 
-StructuredBuffer  <HashGridKeyValue>           _GridBufferRead;
-RWStructuredBuffer<HashGridKeyValue>           _GridBufferWrite;
+StructuredBuffer  <HashGridKeyValue> _GridBufferRead;
+RWStructuredBuffer<HashGridKeyValue> _GridBufferWrite;
 
-StructuredBuffer  <uint2>           _GridIndicesBufferRead;
-RWStructuredBuffer<uint2>           _GridIndicesBufferWrite;
+StructuredBuffer  <GridIndices> _GridIndicesBufferRead;
+RWStructuredBuffer<GridIndices> _GridIndicesBufferWrite;
 
-cbuffer CD {
+cbuffer CB {
 	int _NumParticles;
 	float _RestDensity;
 	float _PressureStiff;
@@ -49,7 +57,7 @@ cbuffer CD {
 };
 
 float3 GridCalculateCell(float3 position) {
-	return position * _GridDim.xyz / _Max;
+	return clamp(position * _GridDim.xyz / _Max, float3(0, 0, 0), float3(255, 255, 255));
 }
 
 uint GridConstructKey(uint3 xyz) {
@@ -76,6 +84,40 @@ void buildGrid(uint3 DTid : SV_DispatchThreadID) {
 }
 
 [numthreads(SIMULATION_BLOCK_SIZE, 1, 1)]
+void buildGridIndices(uint3 DTid : SV_DispatchThreadID) {
+	const unsigned int id = DTid.x;
+	unsigned int id_prev = (id == 0) ? (uint)_NumParticles : id - 1;
+	unsigned int id_next = (id == (uint)_NumParticles) ? 0 : id + 1;
+
+	// セル毎にパーティクルidのスタートとエンドを決定
+	// GridBufferReadはソート済み
+	unsigned int cell = _GridBufferRead[id].key;				// 現在いるセルのインデックスを取得
+	unsigned int cell_prev = _GridBufferRead[id_prev].key;		// 1つ手前のidを持ったパーティクルのセルインデックスを取得
+	unsigned int cell_next = _GridBufferRead[id_next].key;		// 1つ後のidを持ったパーティクルのセルインデックスを取得
+
+	// 自分のいるセルと1個手前パーティクルがいるセルが異なる場合
+	if (cell != cell_prev) {
+		// I'm the start of a cell
+		_GridIndicesBufferWrite[cell].start = id;
+	}
+	if (cell != cell_next) {
+		// I'm the end of a cell
+		_GridIndicesBufferWrite[cell].end = id + 1;
+	}
+}
+
+
+[numthreads(SIMULATION_BLOCK_SIZE, 1, 1)]
+void rearrangeParticles(uint3 DTid : SV_DispatchThreadID) {
+	const unsigned int ID = DTid.x;
+	const unsigned int G_ID = _GridBufferRead[ID].key;	// パーティクルのあるセルid
+
+	_ParticleBufferWrite[ID] = _ParticleBufferRead[G_ID];
+}
+
+
+
+[numthreads(SIMULATION_BLOCK_SIZE, 1, 1)]
 void sph(uint3 DTid : SV_DispatchThreadID) {
 
 	const unsigned int id = DTid.x;
@@ -84,18 +126,28 @@ void sph(uint3 DTid : SV_DispatchThreadID) {
 	// calc amount ---------------------------------------------
 	float r2, c;
 	float3 dr;
-	float H2 = _SmoothStep * _SmoothStep; // 有効半径の2乗
+	float h2 = _SmoothStep * _SmoothStep; // 有効半径の2乗
 
 	float sum = 0.0;
 
-	for (unsigned int j = 0; j < (uint)_NumParticles; j++) {
-		if (id == j) continue;
-		else {
-			dr = (particle.position - _ParticleBufferRead[j].position) * _SimScale;
-			r2 = dot(dr, dr);
-			if (H2 > r2) {
-				c = H2 - r2;
-				sum += c * c * c;
+	int X, Y, Z;
+	// グリッド走査
+	int3 G_XYZ = (int3)GridCalculateCell(particle.position);
+	for (Z = max(G_XYZ.z - 1, 0); Z <= min(G_XYZ.z + 1, 255); Z++) {
+		for (Y = max(G_XYZ.y - 1, 0); Y <= min(G_XYZ.y + 1, 255); Y++) {
+			for (X = max(G_XYZ.x - 1, 0); X <= min(G_XYZ.x + 1, 255); X++) {
+				unsigned int G_CELL = GridConstructKey(uint3(X, Y, Z));
+				GridIndices G_START_END = _GridIndicesBufferRead[G_CELL];
+				for (unsigned int N_ID = G_START_END.start; N_ID < G_START_END.end; N_ID++) {
+					float3 N_position = _ParticleBufferRead[N_ID].position;
+
+					dr = (N_position - particle.position) * _SimScale;
+					r2 = dot(dr, dr);
+					if (r2 < h2) {
+						c = h2 - r2;
+						sum += c*c*c;
+					}
+				}
 			}
 		}
 	}
@@ -113,18 +165,26 @@ void sph(uint3 DTid : SV_DispatchThreadID) {
 
 	force = float3(0, 0, 0);
 
-	for (unsigned int j = 0; j < (uint)_NumParticles; j++) {
-		if (id == j) continue;
-		else {
-			dr = (particle.position - _ParticleBufferRead[j].position) * _SimScale;
-			r = sqrt(dot(dr, dr));
-			if (_SmoothStep > r) {
-				c = _SmoothStep - r;
-				pterm = -0.5 * c * c * _GradPressureCoef / r * (particle.pressure + _ParticleBufferRead[j].pressure) * dr;
-				vterm = _LapViscosityCoef * _Viscosity * c * (_ParticleBufferRead[j].velocity - particle.velocity);
-				fcurr = pterm + vterm;
-				fcurr *= _PMass * _ParticleBufferRead[j].density;
-				force += fcurr;
+	// グリッド走査
+	for (Z = max(G_XYZ.z - 1, 0); Z <= min(G_XYZ.z + 1, 255); Z++) {
+		for (Y = max(G_XYZ.y - 1, 0); Y <= min(G_XYZ.y + 1, 255); Y++) {
+			for (X = max(G_XYZ.x - 1, 0); X <= min(G_XYZ.x + 1, 255); X++) {
+				unsigned int G_CELL = GridConstructKey(uint3(X, Y, Z));
+				GridIndices G_START_END = _GridIndicesBufferRead[G_CELL];
+				for (unsigned int N_ID = G_START_END.start; N_ID < G_START_END.end; N_ID++) {
+					float3 N_position = _ParticleBufferRead[N_ID].position;
+
+					dr = (N_position - particle.position) * _SimScale;
+					r = sqrt(dot(dr, dr));
+					if (r < _SmoothStep) {
+						c = _SmoothStep - r;
+						pterm = -0.5 * c * c * _GradPressureCoef / r * (particle.pressure + _ParticleBufferRead[N_ID].pressure) * dr;
+						vterm = _LapViscosityCoef * _Viscosity * c * (_ParticleBufferRead[N_ID].velocity - particle.velocity);
+						fcurr = pterm + vterm;
+						fcurr *= _PMass * _ParticleBufferRead[N_ID].density;
+						force += fcurr;
+					}
+				}
 			}
 		}
 	}
@@ -149,13 +209,13 @@ void sph(uint3 DTid : SV_DispatchThreadID) {
 
 	// Z-axis walls
 	diff = 2.0 * _Radius - (particle.position.z - _Min.z) * _SimScale;
-	if (diff > 0) {
+	if (diff > EPSILON) {
 		norm = float3(0, 0, 1);
 		adj = _WallStiff * diff - _Restitution * dot(norm, particle.velocity);
 		accel += adj * norm;
 	}
 	diff = 2 * _Radius - (_Max.z - particle.position.z) * _SimScale;
-	if (diff > 0) {
+	if (diff > EPSILON) {
 		norm = float3(0, 0, -1);
 		adj = _WallStiff * diff - _Restitution * dot(norm, particle.velocity);
 		accel += adj * norm;
@@ -163,13 +223,13 @@ void sph(uint3 DTid : SV_DispatchThreadID) {
 
 	// X-axis walls
 	diff = 2.0 * _Radius - (particle.position.x - _Min.x) * _SimScale;
-	if (diff > 0) {
+	if (diff > EPSILON) {
 		norm = float3(1, 0, 0);
 		adj = _WallStiff * diff - _Restitution * dot(norm, particle.velocity);
 		accel += adj * norm;
 	}
 	diff = 2.0 * _Radius - (_Max.x - particle.position.x) * _SimScale;
-	if (diff > 0) {
+	if (diff > EPSILON) {
 		norm = float3(-1, 0, 0);
 		adj = _WallStiff * diff - _Restitution * dot(norm, particle.velocity);
 		accel += adj * norm;
@@ -177,13 +237,13 @@ void sph(uint3 DTid : SV_DispatchThreadID) {
 
 	// Y-axis walls
 	diff = 2.0 * _Radius - (particle.position.y - _Min.y) * _SimScale;
-	if (diff > 0) {
+	if (diff > EPSILON) {
 		norm = float3(0, 1, 0);
 		adj = _WallStiff * diff - _Restitution * dot(norm, particle.velocity);
 		accel += adj * norm;
 	}
 	diff = 2.0 * _Radius - (_Max.y - particle.position.y) * _SimScale;
-	if (diff > 0) {
+	if (diff > EPSILON) {
 		norm = float3(0, -1, 0);
 		adj = _WallStiff * diff - _Restitution * dot(norm, particle.velocity);
 		accel += adj * norm;

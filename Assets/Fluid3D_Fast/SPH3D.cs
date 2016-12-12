@@ -5,13 +5,20 @@ using System.Collections.Generic;
 namespace SPH3D_FAST {
     public class SPH3D : MonoBehaviour {
 
-        const int SIMULATION_BLOCK_SIZE = 32;
-        public ComputeShader particleCS;
+        const int SIMULATION_BLOCK_SIZE = 256;
+        const int NUM_GRID_INDICES = 16777216;
 
-        ComputeBuffer ParticleBufferRead;
-        ComputeBuffer ParticleBufferWrite;
-        ComputeBuffer GridBufferRead;
-        ComputeBuffer GridBufferWrite;
+        const int BITONIC_BLOCK_SIZE = 512;
+        const int TRANSPOSE_BLOCK_SIZE = 16;
+
+        public ComputeShader particleCS;
+        public ComputeShader BitonicSortCS;
+
+        ComputeBuffer ParticleBuffer;
+        ComputeBuffer SortedParticleBuffer;
+        ComputeBuffer GridBuffer;
+        ComputeBuffer GridPingPongForSort;
+        ComputeBuffer GridIndicesBuffer;
 
         // ---------- For SPH ------------
         public int numParticles;
@@ -33,10 +40,8 @@ namespace SPH3D_FAST {
         private float gradPressureCoef;
         private float lapViscosityCoef;
 
-        public Vector3 GridDim = new Vector3(20.0f, 50.0f, 10.0f);
+        public Vector3 GridDim = new Vector3(256.0f, 256.0f, 256.0f);
         // ---------- For SPH ------------
-
-        
 
         void Start() {
             InitializeVariables();
@@ -44,7 +49,7 @@ namespace SPH3D_FAST {
         }
 
         public ComputeBuffer GetParticleBuffer() {
-            return this.ParticleBufferRead;
+            return this.ParticleBuffer;
         }
 
         public int GetMaxParticleNum() {
@@ -52,7 +57,7 @@ namespace SPH3D_FAST {
         }
 
         void Update() {
-            int threadGroupSize = Mathf.CeilToInt(numParticles / SIMULATION_BLOCK_SIZE) + 1;
+            int threadGroupSize = numParticles / SIMULATION_BLOCK_SIZE;
 
             particleCS.SetInt("_NumParticles", numParticles);
             particleCS.SetFloat("_RestDensity", restDensity);
@@ -76,25 +81,43 @@ namespace SPH3D_FAST {
 
             // Build Grid ----------------------------------------------------------------
             int kernel = particleCS.FindKernel("buildGrid");
-            particleCS.SetBuffer(kernel, "_ParticleBufferRead", ParticleBufferRead);
-            particleCS.SetBuffer(kernel, "_GridBufferRead", GridBufferRead);
-            particleCS.SetBuffer(kernel, "_GridBufferWrite", GridBufferWrite);
+            particleCS.SetBuffer(kernel, "_ParticleBufferRead", ParticleBuffer);
+            particleCS.SetBuffer(kernel, "_GridBufferWrite", GridBuffer);
             particleCS.Dispatch(kernel, threadGroupSize, 1, 1);
-            SwapBuffer(ref GridBufferRead, ref GridBufferWrite);
 
-            //HashGridKeyValue[] h = new HashGridKeyValue[numParticles];
-            //GridBufferRead.GetData(h);
-            //Debug.Log(h[10].key >> 16); // h[particle_id]:cell z
+            sortDebug();
             // Build Grid ----------------------------------------------------------------
 
-            kernel = particleCS.FindKernel("sph");
-            particleCS.SetBuffer(kernel, "_ParticleBufferRead", ParticleBufferRead);
-            particleCS.SetBuffer(kernel, "_ParticleBufferWrite", ParticleBufferWrite);
-            //particleCS.SetBuffer(kernel, "_GridSorted", GridSorted);
+            // Sort ----------------------------------------------------------------------
+            GPUSort(ref GridBuffer, GridPingPongForSort);
+            sortDebug();
+            // Sort ----------------------------------------------------------------------
 
+
+
+            // Build Grid Indices --------------------------------------------------------
+            kernel = particleCS.FindKernel("buildGridIndices");
+            particleCS.SetBuffer(kernel, "_GridBufferRead", GridBuffer);
+            particleCS.SetBuffer(kernel, "_GridIndicesBufferWrite", GridIndicesBuffer);
+            particleCS.Dispatch(kernel, threadGroupSize, 1, 1);
+            // Build Grid Indices --------------------------------------------------------
+
+            
+            // Rearrange
+            kernel = particleCS.FindKernel("rearrangeParticles");
+            particleCS.SetBuffer(kernel, "_GridBufferRead", GridBuffer);
+            particleCS.SetBuffer(kernel, "_ParticleBufferRead", ParticleBuffer);
+            particleCS.SetBuffer(kernel, "_ParticleBufferWrite", SortedParticleBuffer);
             particleCS.Dispatch(kernel, threadGroupSize, 1, 1);
 
-            SwapBuffer(ref ParticleBufferRead, ref ParticleBufferWrite);
+            /*
+            kernel = particleCS.FindKernel("sph");
+            particleCS.SetBuffer(kernel, "_ParticleBufferRead", SortedParticleBuffer);
+            particleCS.SetBuffer(kernel, "_GridIndicesBufferRead", GridIndicesBuffer);
+            particleCS.SetBuffer(kernel, "_ParticleBufferWrite", ParticleBuffer);
+            particleCS.Dispatch(kernel, threadGroupSize, 1, 1);
+            */
+            
         }
 
         void InitializeVariables() {
@@ -105,16 +128,25 @@ namespace SPH3D_FAST {
 
         void InitializeComputeBuffer() {
             List<Particle> particles = new List<Particle>();
-            for (float x = 0; x <= numParticles; x++) {
+            for (int i = 0; i < numParticles; i++) {
                 particles.Add(new Particle((max + min)/2 + Random.insideUnitSphere * 10));
             }
 
-            ParticleBufferRead = new ComputeBuffer(numParticles, Marshal.SizeOf(typeof(Particle)));
-            ParticleBufferWrite = new ComputeBuffer(numParticles, Marshal.SizeOf(typeof(Particle)));
-            ParticleBufferRead.SetData(particles.ToArray());
+            ParticleBuffer = new ComputeBuffer(numParticles, Marshal.SizeOf(typeof(Particle)));
+            ParticleBuffer.SetData(particles.ToArray());
 
-            GridBufferRead = new ComputeBuffer(numParticles, Marshal.SizeOf(typeof(HashGridKeyValue)));
-            GridBufferWrite = new ComputeBuffer(numParticles, Marshal.SizeOf(typeof(HashGridKeyValue)));
+            GridBuffer = new ComputeBuffer(numParticles, Marshal.SizeOf(typeof(HashGridKeyValue)));
+            GridPingPongForSort = new ComputeBuffer(numParticles, Marshal.SizeOf(typeof(HashGridKeyValue)));
+
+            // 初期化まで
+            GridIndicesBuffer = new ComputeBuffer(NUM_GRID_INDICES, Marshal.SizeOf(typeof(GridIndices)));
+            GridIndices[] gridIndices = new GridIndices[NUM_GRID_INDICES];
+            for (int i = 0; i < NUM_GRID_INDICES; i++) {
+                gridIndices[i] = new GridIndices(0, 0);
+            }
+            GridIndicesBuffer.SetData(gridIndices);
+
+            SortedParticleBuffer = new ComputeBuffer(numParticles, Marshal.SizeOf(typeof(Particle)));
         }
 
         void SwapBuffer(ref ComputeBuffer src, ref ComputeBuffer dst) {
@@ -124,21 +156,25 @@ namespace SPH3D_FAST {
         }
 
         void ReleaseBuffer() {
-            if (ParticleBufferRead != null) {
-                ParticleBufferRead.Release();
-                ParticleBufferRead = null;
+            if (ParticleBuffer != null) {
+                ParticleBuffer.Release();
+                ParticleBuffer = null;
             }
-            if (ParticleBufferWrite != null) {
-                ParticleBufferWrite.Release();
-                ParticleBufferWrite = null;
+            if (GridBuffer != null) {
+                GridBuffer.Release();
+                GridBuffer = null;
             }
-            if (GridBufferRead != null) {
-                GridBufferRead.Release();
-                GridBufferRead = null;
+            if (GridPingPongForSort != null) {
+                GridPingPongForSort.Release();
+                GridPingPongForSort = null;
             }
-            if (GridBufferWrite != null) {
-                GridBufferWrite.Release();
-                GridBufferWrite = null;
+            if (GridIndicesBuffer != null) {
+                GridIndicesBuffer.Release();
+                GridIndicesBuffer = null;
+            }
+            if (SortedParticleBuffer != null) {
+                SortedParticleBuffer.Release();
+                SortedParticleBuffer = null;
             }
         }
         
@@ -149,6 +185,66 @@ namespace SPH3D_FAST {
 
         void OnDestroy() {
             ReleaseBuffer();
+        }
+
+        void sortDebug() {
+            HashGridKeyValue[] h = new HashGridKeyValue[numParticles];
+            GridBuffer.GetData(h);
+            string tmp = "";
+            for (int i = 0; i < 100; i++) {
+                tmp += "["+ h[i].key + "," + h[i].value + "],";
+            }
+            Debug.Log(tmp); // h[particle_id]:cell z
+        }
+
+        void GPUSort(ref ComputeBuffer inBuffer, ComputeBuffer tmpBuffer) {
+            ComputeShader sortCS = BitonicSortCS;
+
+            int KERNEL_ID_BITONICSORT = sortCS.FindKernel("BitonicSort");
+            int KERNEL_ID_TRANSPOSE = sortCS.FindKernel("MatrixTranspose");
+
+            uint NUM_ELEMENTS = (uint)numParticles;
+            uint MATRIX_WIDTH = BITONIC_BLOCK_SIZE;
+            uint MATRIX_HEIGHT = (uint)NUM_ELEMENTS / BITONIC_BLOCK_SIZE;
+
+            for (uint level = 2; level <= BITONIC_BLOCK_SIZE; level <<= 1) {
+                SetGPUSortConstants(sortCS, level, level, MATRIX_HEIGHT, MATRIX_WIDTH);
+
+                // Sort the row data
+                sortCS.SetBuffer(KERNEL_ID_BITONICSORT, "Data", inBuffer);
+                sortCS.Dispatch(KERNEL_ID_BITONICSORT, (int)(NUM_ELEMENTS / BITONIC_BLOCK_SIZE), 1, 1);
+            }
+
+            // Then sort the rows and columns for the levels > than the block size
+            // Transpose. Sort the Columns. Transpose. Sort the Rows.
+            for (uint level = (BITONIC_BLOCK_SIZE << 1); level <= NUM_ELEMENTS; level <<= 1) {
+                // Transpose the data from buffer 1 into buffer 2
+                SetGPUSortConstants(sortCS, level / BITONIC_BLOCK_SIZE, (level & ~NUM_ELEMENTS) / BITONIC_BLOCK_SIZE, MATRIX_WIDTH, MATRIX_HEIGHT);
+                sortCS.SetBuffer(KERNEL_ID_TRANSPOSE, "Input", inBuffer);
+                sortCS.SetBuffer(KERNEL_ID_TRANSPOSE, "Data", tmpBuffer);
+                sortCS.Dispatch(KERNEL_ID_TRANSPOSE, (int)(MATRIX_WIDTH / TRANSPOSE_BLOCK_SIZE), (int)(MATRIX_HEIGHT / TRANSPOSE_BLOCK_SIZE), 1);
+
+                // Sort the transposed column data
+                sortCS.SetBuffer(KERNEL_ID_BITONICSORT, "Data", tmpBuffer);
+                sortCS.Dispatch(KERNEL_ID_BITONICSORT, (int)(NUM_ELEMENTS / BITONIC_BLOCK_SIZE), 1, 1);
+
+                // Transpose the data from buffer 2 back into buffer 1
+                SetGPUSortConstants(sortCS, BITONIC_BLOCK_SIZE, level, MATRIX_HEIGHT, MATRIX_WIDTH);
+                sortCS.SetBuffer(KERNEL_ID_TRANSPOSE, "Input", tmpBuffer);
+                sortCS.SetBuffer(KERNEL_ID_TRANSPOSE, "Data", inBuffer);
+                sortCS.Dispatch(KERNEL_ID_TRANSPOSE, (int)(MATRIX_HEIGHT / TRANSPOSE_BLOCK_SIZE), (int)(MATRIX_WIDTH / TRANSPOSE_BLOCK_SIZE), 1);
+
+                // Sort the row data
+                sortCS.SetBuffer(KERNEL_ID_BITONICSORT, "Data", inBuffer);
+                sortCS.Dispatch(KERNEL_ID_BITONICSORT, (int)(NUM_ELEMENTS / BITONIC_BLOCK_SIZE), 1, 1);
+            }
+        }
+
+        void SetGPUSortConstants(ComputeShader cs, uint level, uint levelMask, uint width, uint height) {
+            cs.SetInt("_Level", (int)level);
+            cs.SetInt("_LevelMask", (int)levelMask);
+            cs.SetInt("_Width", (int)width);
+            cs.SetInt("_Height", (int)height);
         }
 
     }
@@ -173,4 +269,14 @@ namespace SPH3D_FAST {
         public uint key;
         public uint value;
     };
+    
+    struct GridIndices {
+        public uint start;
+        public uint end;
+
+        public GridIndices(uint start, uint end) {
+            this.start = start;
+            this.end = end;
+        }
+    }
 }

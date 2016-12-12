@@ -113,6 +113,8 @@
     <None Include="Assets\Fluid2D\SPH2D.shader" />
     <None Include="Assets\Fluid3D\SPH3D.compute" />
     <None Include="Assets\Fluid3D\SPH3D.shader" />
+    <None Include="Assets\Fluid3D_Fast\BitonicSort.compute" />
+    <None Include="Assets\Fluid3D_Fast\BitonicSort64.compute" />
     <None Include="Assets\Fluid3D_Fast\SPH3D.compute" />
     <None Include="Assets\Fluid3D_Fast\SPH3D.shader" />
     <None Include="Assets\Standard Assets\Effects\GlassRefraction\Shaders\GlassStainedBumpDistort.shader" />
