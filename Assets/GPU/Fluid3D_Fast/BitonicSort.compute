@@ -15,7 +15,8 @@
 //--------------------------------------------------------------------------------------
 // Constant Buffers
 //--------------------------------------------------------------------------------------
-cbuffer CB {
+cbuffer CB
+{
 	uint _Level;
 	uint _LevelMask;
 	uint _Width;
@@ -39,7 +40,11 @@ bool Compare(uint2 left, uint2 right)
 }
 
 [numthreads(BITONIC_BLOCK_SIZE, 1, 1)]
-void BitonicSort(uint3 Gid  : SV_GroupID, uint3 DTid : SV_DispatchThreadID, uint3 GTid : SV_GroupThreadID, uint  GI   : SV_GroupIndex) {
+void BitonicSort(uint3 Gid  : SV_GroupID,
+	uint3 DTid : SV_DispatchThreadID,
+	uint3 GTid : SV_GroupThreadID,
+	uint  GI : SV_GroupIndex)
+{
 	// Load shared data
 	shared_data[GI] = Data[DTid.x];
 	GroupMemoryBarrierWithGroupSync();
@@ -63,10 +68,10 @@ void BitonicSort(uint3 Gid  : SV_GroupID, uint3 DTid : SV_DispatchThreadID, uint
 groupshared uint2 transpose_shared_data[TRANSPOSE_BLOCK_SIZE * TRANSPOSE_BLOCK_SIZE];
 
 [numthreads(TRANSPOSE_BLOCK_SIZE, TRANSPOSE_BLOCK_SIZE, 1)]
-void MatrixTranspose(uint3 Gid  : SV_GroupID, 
-                     uint3 DTid : SV_DispatchThreadID,
-                     uint3 GTid : SV_GroupThreadID,
-                     uint  GI   : SV_GroupIndex)
+void MatrixTranspose(uint3 Gid  : SV_GroupID,
+	uint3 DTid : SV_DispatchThreadID,
+	uint3 GTid : SV_GroupThreadID,
+	uint  GI : SV_GroupIndex)
 {
 	transpose_shared_data[GI] = Input[DTid.y * _Width + DTid.x];
 	GroupMemoryBarrierWithGroupSync();

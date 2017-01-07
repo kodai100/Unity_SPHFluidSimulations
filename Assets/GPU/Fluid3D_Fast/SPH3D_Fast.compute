@@ -1,0 +1,330 @@
+﻿#pragma kernel BuildGridCS
+#pragma kernel ClearGridIndicesCS
+#pragma kernel BuildGridIndicesCS
+#pragma kernel RearrangeParticlesCS
+#pragma kernel DensityCS_Grid
+#pragma kernel ForceCS_Grid
+#pragma kernel IntegrateCS
+
+struct Particle {
+	float3 position;
+	float3 velocity;
+};
+
+struct ParticleForces {
+	float3 acceleration;
+};
+
+struct ParticleDensity {
+	float density;
+};
+
+cbuffer CB {
+	int   _NumParticles;
+	float _TimeStep;
+	float _Smoothlen;
+	float _PressureStiffness;
+	float _RestDensity;
+	float _DensityCoef;
+	float _GradPressureCoef;
+	float _LapViscosityCoef;
+	float _WallStiffness;
+	float3 _ContainerCenter;
+	float3 _ContainerSize;
+
+	float4 _Gravity;
+	float4 _GridDim;
+};
+
+//--------------------------------------------------------------------------------------
+// Fluid Simulation
+//--------------------------------------------------------------------------------------
+
+#define SIMULATION_BLOCK_SIZE 256
+
+//--------------------------------------------------------------------------------------
+// Structured Buffers
+//--------------------------------------------------------------------------------------
+
+StructuredBuffer  <Particle>        _ParticlesBufferRead;
+RWStructuredBuffer<Particle>        _ParticlesBufferWrite;
+
+StructuredBuffer  <ParticleDensity> _ParticlesDensityBufferRead;
+RWStructuredBuffer<ParticleDensity> _ParticlesDensityBufferWrite;
+
+StructuredBuffer  <ParticleForces>  _ParticlesForceBufferRead;
+RWStructuredBuffer<ParticleForces>  _ParticlesForceBufferWrite;
+
+StructuredBuffer  <uint2>           _GridBufferRead;
+RWStructuredBuffer<uint2>           _GridBufferWrite;
+
+StructuredBuffer  <uint2>           _GridIndicesBufferRead;
+RWStructuredBuffer<uint2>           _GridIndicesBufferWrite;
+
+//--------------------------------------------------------------------------------------
+// Grid Construction
+//--------------------------------------------------------------------------------------
+
+float3 GridCalculateCell(float3 position) {
+	//return clamp(position * _GridDim.xyz, float3(0, 0, 0), float3(255, 255, 255));
+	return clamp(position * _GridDim.xyz, float3(0.0, 0.0, 0.0), float3(255.0, 255.0, 255.0));
+}
+
+uint GridConstructKey(uint3 xyz) {
+	// Bit pack [-----UNUSED-----][----Y---][----X---]
+	//                16-bit         8-bit    8-bit
+	//return dot(xyz.zyx, uint3(256*256, 256, 1));
+	return (xyz.x + xyz.y * 256 + xyz.z * 256 * 256);
+}
+
+uint2 GridConstructKeyValuePair(uint3 xyz, uint value) {
+	// Bit pack [----X---][----Y---][-----VALUE------]
+	//             8-bit     8-bit        16-bit
+	//return dot(uint3(xy.yx, value), uint3(256*256*256, 256*256, 1));
+	//return uint2(dot(xyz.zyx, uint3(256*256, 256, 1)), value);
+	return uint2(xyz.x + xyz.y * 256 + xyz.z * 256 * 256, value);
+}
+
+uint GridGetKey(uint2 keyvaluepair) {
+	//return (keyvaluepair >> 16);
+	return keyvaluepair.x;
+}
+
+uint GridGetValue(uint2 keyvaluepair) {
+	//return (keyvaluepair & 0xFFFF);
+	return keyvaluepair.y;
+}
+
+//--------------------------------------------------------------------------------------
+// Build Grid
+//--------------------------------------------------------------------------------------
+
+[numthreads(SIMULATION_BLOCK_SIZE, 1, 1)]
+void BuildGridCS(uint3 Gid  : SV_GroupID, uint3 DTid : SV_DispatchThreadID, uint3 GTid : SV_GroupThreadID, uint  GI : SV_GroupIndex) {
+	const unsigned int P_ID = DTid.x;	// Particle ID to operate on
+
+	float3 position = _ParticlesBufferRead[P_ID].position;
+	float3 grid_xyz = GridCalculateCell(position);
+
+	_GridBufferWrite[P_ID] = GridConstructKeyValuePair((uint3)grid_xyz, P_ID);
+}
+
+//--------------------------------------------------------------------------------------
+// Build Grid Indices
+//--------------------------------------------------------------------------------------
+
+[numthreads(SIMULATION_BLOCK_SIZE, 1, 1)]
+void ClearGridIndicesCS(uint3 Gid  : SV_GroupID, uint3 DTid : SV_DispatchThreadID, uint3 GTid : SV_GroupThreadID, uint  GI : SV_GroupIndex) {
+	_GridIndicesBufferWrite[DTid.x] = uint2(0, 0);
+}
+
+[numthreads(SIMULATION_BLOCK_SIZE, 1, 1)]
+void BuildGridIndicesCS(uint3 Gid  : SV_GroupID, uint3 DTid : SV_DispatchThreadID, uint3 GTid : SV_GroupThreadID, uint  GI : SV_GroupIndex) {
+	const unsigned int G_ID = DTid.x;	// Grid ID to operate on
+	unsigned int       G_ID_PREV = (G_ID == 0) ? (uint)_NumParticles : G_ID; G_ID_PREV--;
+	unsigned int       G_ID_NEXT = G_ID + 1; if (G_ID_NEXT == (uint)_NumParticles) { G_ID_NEXT = 0; }
+
+	unsigned int cell = GridGetKey(_GridBufferRead[G_ID]);
+	unsigned int cell_prev = GridGetKey(_GridBufferRead[G_ID_PREV]);
+	unsigned int cell_next = GridGetKey(_GridBufferRead[G_ID_NEXT]);
+
+	if (cell != cell_prev) {
+		// I'm the start of a cell
+		_GridIndicesBufferWrite[cell].x = G_ID;
+	}
+
+	if (cell != cell_next) {
+		// I'm the end of a cell
+		_GridIndicesBufferWrite[cell].y = G_ID + 1;
+	}
+}
+
+
+//--------------------------------------------------------------------------------------
+// Rearrange Particles
+//--------------------------------------------------------------------------------------
+
+[numthreads(SIMULATION_BLOCK_SIZE, 1, 1)]
+void RearrangeParticlesCS(uint3 Gid  : SV_GroupID, uint3 DTid : SV_DispatchThreadID, uint3 GTid : SV_GroupThreadID, uint  GI : SV_GroupIndex) {
+	const unsigned int ID = DTid.x; // Particle ID to operate on
+	const unsigned int G_ID = GridGetValue(_GridBufferRead[ID]);
+	_ParticlesBufferWrite[ID] = _ParticlesBufferRead[G_ID];
+}
+
+//--------------------------------------------------------------------------------------
+// Density Calculation
+//--------------------------------------------------------------------------------------
+
+float CalculateDensity(float r_sq) {
+	const float h_sq = _Smoothlen * _Smoothlen;
+	// Implements this equation:
+	// W_poly6(r, h) = 315 / (64 * pi * h^9) * (h^2 - r^2)^3
+	// g_fDensityCoef = fParticleMass * 315.0f / (64.0f * PI * fSmoothlen^9)
+	return _DensityCoef * (h_sq - r_sq) * (h_sq - r_sq) * (h_sq - r_sq);
+}
+
+//--------------------------------------------------------------------------------------
+// Optimized Grid + Sort Algorithm
+//--------------------------------------------------------------------------------------
+
+[numthreads(SIMULATION_BLOCK_SIZE, 1, 1)]
+void DensityCS_Grid(uint3 Gid  : SV_GroupID, uint3 DTid : SV_DispatchThreadID, uint3 GTid : SV_GroupThreadID, uint  GI : SV_GroupIndex) {
+	const unsigned int P_ID = DTid.x;
+	const float h_sq = _Smoothlen * _Smoothlen;
+	float3 P_position = _ParticlesBufferRead[P_ID].position;
+
+	float density = 0;
+
+	// Calculate the density based on neighbors from the 8 adjacent cells + current cell
+	int3 G_XYZ = (int3)GridCalculateCell(P_position);
+	for (int Z = max(G_XYZ.z - 1, 0); Z <= min(G_XYZ.z + 1, 255); Z++) {
+		for (int Y = max(G_XYZ.y - 1, 0); Y <= min(G_XYZ.y + 1, 255); Y++) {
+			for (int X = max(G_XYZ.x - 1, 0); X <= min(G_XYZ.x + 1, 255); X++) {
+				unsigned int G_CELL = GridConstructKey(uint3(X, Y, Z));
+				uint2 G_START_END = _GridIndicesBufferRead[G_CELL];
+				for (unsigned int N_ID = G_START_END.x; N_ID < G_START_END.y; N_ID++) {
+					float3 N_position = _ParticlesBufferRead[N_ID].position;
+
+					float3 diff = N_position - P_position;
+					float r_sq = dot(diff, diff);
+					if (r_sq < h_sq) {
+						density += CalculateDensity(r_sq);
+					}
+				}
+			}
+		}
+	}
+	_ParticlesDensityBufferWrite[P_ID].density = density;
+}
+
+//--------------------------------------------------------------------------------------
+// Force Calculation
+//--------------------------------------------------------------------------------------
+
+float CalculatePressure(float density) {
+	// Implements this equation:
+	// Pressure = B * ((rho / rho_0)^y  - 1)
+	return _PressureStiffness * max(pow(density / _RestDensity, 3) - 1, 0);
+}
+
+float3 CalculateGradPressure(float r, float P_pressure, float N_pressure, float N_density, float3 diff) {
+	const float h = _Smoothlen;
+	float avg_pressure = 0.5f * (N_pressure + P_pressure);
+	// Implements this equation:
+	// W_spkiey(r, h) = 15 / (pi * h^6) * (h - r)^3
+	// GRAD( W_spikey(r, h) ) = -45 / (pi * h^6) * (h - r)^2
+	// g_fGradPressureCoef = fParticleMass * -45.0f / (PI * fSmoothlen^6)
+	return _GradPressureCoef * avg_pressure / N_density * (h - r) * (h - r) / r * (diff);
+}
+
+float3 CalculateLapVelocity(float r, float3 P_velocity, float3 N_velocity, float N_density) {
+	const float h = _Smoothlen;
+	float3 vel_diff = (N_velocity - P_velocity);
+	// Implements this equation:
+	// W_viscosity(r, h) = 15 / (2 * pi * h^3) * (-r^3 / (2 * h^3) + r^2 / h^2 + h / (2 * r) - 1)
+	// LAPLACIAN( W_viscosity(r, h) ) = 45 / (pi * h^6) * (h - r)
+	// g_fLapViscosityCoef = fParticleMass * fViscosity * 45.0f / (PI * fSmoothlen^6)
+	return _LapViscosityCoef / N_density * (h - r) * vel_diff;
+}
+
+
+//--------------------------------------------------------------------------------------
+// Optimized Grid + Sort Algorithm
+//--------------------------------------------------------------------------------------
+
+[numthreads(SIMULATION_BLOCK_SIZE, 1, 1)]
+void ForceCS_Grid(uint3 Gid  : SV_GroupID, uint3 DTid : SV_DispatchThreadID, uint3 GTid : SV_GroupThreadID, uint  GI : SV_GroupIndex) {
+	const unsigned int P_ID = DTid.x; // Particle ID to operate on
+
+	float3 P_position = _ParticlesBufferRead[P_ID].position;
+	float3 P_velocity = _ParticlesBufferRead[P_ID].velocity;
+	float  P_density = _ParticlesDensityBufferRead[P_ID].density;
+	float  P_pressure = CalculatePressure(P_density);
+
+	const float h_sq = _Smoothlen * _Smoothlen;
+
+	float3 acceleration = float3(0, 0, 0);
+
+	// Calculate the acceleration based on neighbors from the 8 adjacent cells + current cell
+	int3 G_XYZ = (int3)GridCalculateCell(P_position);
+	for (int Z = max(G_XYZ.z - 1, 0); Z <= min(G_XYZ.z + 1, 255); Z++) {
+		for (int Y = max(G_XYZ.y - 1, 0); Y <= min(G_XYZ.y + 1, 255); Y++) {
+			for (int X = max(G_XYZ.x - 1, 0); X <= min(G_XYZ.x + 1, 255); X++) {
+				unsigned int G_CELL = GridConstructKey(uint3(X, Y, Z));
+				uint2 G_START_END = _GridIndicesBufferRead[G_CELL];
+				for (unsigned int N_ID = G_START_END.x; N_ID < G_START_END.y; N_ID++) {
+					float3 N_position = _ParticlesBufferRead[N_ID].position;
+
+					float3 diff = N_position - P_position;
+					float r_sq = dot(diff, diff);
+					if (r_sq < h_sq && P_ID != N_ID) {
+						float3 N_velocity = _ParticlesBufferRead[N_ID].velocity;
+						float  N_density = _ParticlesDensityBufferRead[N_ID].density;
+						float  N_pressure = CalculatePressure(N_density);
+						float  r = sqrt(r_sq);
+
+						// Pressure Term
+						acceleration += CalculateGradPressure(r, P_pressure, N_pressure, N_density, diff);
+
+						// Viscosity Term
+						acceleration += CalculateLapVelocity(r, P_velocity, N_velocity, N_density);
+					}
+				}
+			}
+		}
+	}
+
+	_ParticlesForceBufferWrite[P_ID].acceleration = acceleration / P_density;
+}
+
+//--------------------------------------------------------------------------------------
+// Integration
+//--------------------------------------------------------------------------------------
+
+[numthreads(SIMULATION_BLOCK_SIZE, 1, 1)]
+void IntegrateCS(uint3 Gid  : SV_GroupID, uint3 DTid : SV_DispatchThreadID, uint3 GTid : SV_GroupThreadID, uint  GI : SV_GroupIndex) {
+	const unsigned int P_ID = DTid.x; // Particle ID to operate on
+
+	float3 position = _ParticlesBufferRead[P_ID].position;
+	float3 velocity = _ParticlesBufferRead[P_ID].velocity;
+	float3 acceleration = _ParticlesForceBufferRead[P_ID].acceleration;
+
+	float  _Restitution = 0.001;
+	
+	if (position.x < 0) {
+		velocity.x = 0;
+		position.x = 0;
+	}
+	if (position.x > 1) {
+		velocity.x = 0;
+		position.x = 1;
+	}
+	if (position.y < 0) {
+		velocity.y = 0;
+		position.y = 0;
+	}
+	if (position.y > 1) {
+		velocity.y = 0;
+		position.y = 1;
+	}
+	if (position.z < -1) {
+		velocity.z = 0;
+		position.z = -1;
+	}
+	if (position.z > 0) {
+		velocity.z = 0;
+		position.z = 0;
+	}
+
+
+	// Apply gravity
+	acceleration += _Gravity.xyz;
+
+	// Integrate
+	velocity += _TimeStep * acceleration;
+	position += _TimeStep * velocity;
+
+	// Update
+	_ParticlesBufferWrite[P_ID].position = position;
+	_ParticlesBufferWrite[P_ID].velocity = velocity;
+}
