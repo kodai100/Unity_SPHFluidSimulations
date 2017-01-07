@@ -66,7 +66,6 @@ RWStructuredBuffer<uint2>           _GridIndicesBufferWrite;
 //--------------------------------------------------------------------------------------
 
 float3 GridCalculateCell(float3 position) {
-	//return clamp(position * _GridDim.xyz, float3(0, 0, 0), float3(255, 255, 255));
 	return clamp(position * _GridDim.xyz, float3(0.0, 0.0, 0.0), float3(255.0, 255.0, 255.0));
 }
 
@@ -307,6 +306,8 @@ void IntegrateCS(uint3 Gid  : SV_GroupID, uint3 DTid : SV_DispatchThreadID, uint
 		velocity.y = 0;
 		position.y = 1;
 	}
+
+	// ?
 	if (position.z < -1) {
 		velocity.z = 0;
 		position.z = -1;
