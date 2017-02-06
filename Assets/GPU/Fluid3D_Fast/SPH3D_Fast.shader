@@ -71,10 +71,10 @@ Shader "Custom/SPH2D_Fast"
 		//o.color = float4(normalize(_ParticlesBuffer[id].position.xyz), 1.0);
 
 		// 速度
-		//o.color = float4(0.5 + 0.5 * normalize(_ParticlesBuffer[id].velocity.xyz), 1.0);
+		o.color = float4(0.5 + 0.5 * normalize(_ParticlesBuffer[id].velocity.xyz), 1.0);
 
 		// 密度
-		o.color = float4(0.5,0.5,_ParticlesDensityBuffer[id].density*0.001, 1.0);
+		//o.color = float4(0.5,0.5,_ParticlesDensityBuffer[id].density*0.001, 1.0);
 
 		float density = _ParticlesDensityBuffer[id].density;
 		//o.color = float4(hsv2rgb(float3(-0.45, saturate(smoothstep(0.2, 0.9, density * 0.0005)), 0.5)), 1.0);

@@ -51,6 +51,9 @@ public class SPH3D_Fast : MonoBehaviour {
 
     public NumParticlesSet ParticleNum = NumParticlesSet.NUM_16K;
 
+    [Range(0f, 1f)]
+    public float ballRadius = 0.1f;
+
     public float Smoothlen = 0.012f;
     public float PressureStiffness = 200.0f;
     public float RestDensity = 1000.0f;
@@ -189,7 +192,7 @@ public class SPH3D_Fast : MonoBehaviour {
         var particles = new FluidParticle[_numParticles];
         for (int i = 0; i < _numParticles; i++) {
             particles[i].Velocity = Vector3.zero;
-            particles[i].Position = _containerCenter + Random.insideUnitSphere * 0.1f;
+            particles[i].Position = _containerCenter + Random.insideUnitSphere * ballRadius;
         }
         _particlesBuffer.SetData(particles);
 

@@ -70,17 +70,12 @@ float3 GridCalculateCell(float3 position) {
 }
 
 uint GridConstructKey(uint3 xyz) {
-	// Bit pack [-----UNUSED-----][----Y---][----X---]
-	//                16-bit         8-bit    8-bit
-	//return dot(xyz.zyx, uint3(256*256, 256, 1));
+	// return grid hash
 	return (xyz.x + xyz.y * 256 + xyz.z * 256 * 256);
 }
 
 uint2 GridConstructKeyValuePair(uint3 xyz, uint value) {
-	// Bit pack [----X---][----Y---][-----VALUE------]
-	//             8-bit     8-bit        16-bit
-	//return dot(uint3(xy.yx, value), uint3(256*256*256, 256*256, 1));
-	//return uint2(dot(xyz.zyx, uint3(256*256, 256, 1)), value);
+	// uint2([GridHash], [ParticleID]) 
 	return uint2(xyz.x + xyz.y * 256 + xyz.z * 256 * 256, value);
 }
 
